@@ -5,7 +5,13 @@
 
 ## TL;DR
 
-**Recommendation: cherry-pick patterns, build fresh** (path 2 of §6.3).
+**Recommendation: build fresh on our stack. No ClawHost code in our repo.**
+
+This is path 2 of §6.3 ("cherry-pick patterns, build fresh"), with the
+understanding — confirmed with the operator — that we are *not obligated*
+to take anything from ClawHost. The patterns noted later in this doc are
+informational; we may use them, simplify past them, or reject them entirely
+during Phase 1 design.
 
 ClawHost is a real, working OpenClaw deployment dashboard with thoughtful
 schema and a usable Hetzner+Cloudflare provisioning pipeline. But three of its
@@ -22,8 +28,8 @@ ClawHost is more work than greenfield against Vercel+Neon:
    no AppArmor, no SOPS, no `unattended-upgrades`. Adapting this to our §5
    checklist is ~80% of a rewrite.
 
-What's worth stealing is concrete and tracked in
-[Patterns worth stealing](#patterns-worth-stealing) below.
+Patterns we considered but are not obligated to take are tracked in
+[Patterns worth noting](#patterns-worth-noting) below.
 
 Estimated greenfield against our stack: **2–3 weeks**. Estimated fork-and-adapt: **4–6 weeks** with worse end-state.
 
@@ -55,12 +61,12 @@ approved scope cap; quality assessed from code.
 | Hetzner one-click VPS provisioning | Yes — `controllers/agents/provisionAgent.ts` + per-verb wrappers in `services/hetzner/` | Solid; full pipeline w/ DNS + cloud-init + status reconciliation | **ADAPT** | 4–6 | 8–12 |
 | Cloudflare DNS subdomain | Yes — `services/cloudflare.ts` (official SDK + 30s cache + inflight dedupe) | Solid; domain `clawhost.cloud` hardcoded at `cloudflare.ts:90` | **ADAPT** | 1–2 | 3–4 |
 | Let's Encrypt SSL | Yes — embedded in cloud-init at `generateCloudInit.ts:280-290` | Naive (sequential `host` poll then certbot); no DNS-01 fallback | **ADAPT** | 1 | 2–3 |
-| Browser SSH terminal | Yes — `services/terminalSocket.ts` + xterm.js | Solid (resize protocol, ping keepalive, host-key TOFU); root-password auth is the smell | **ADAPT** to key-based, **and host on our small VPS not Vercel** | 4–6 | 12–16 |
+| Browser SSH terminal | Yes — `services/terminalSocket.ts` + xterm.js | Solid (resize protocol, ping keepalive, host-key TOFU); root-password auth is the smell | **DEFER** (Phase 3+ polish; operator on Tailscale can SSH from laptop) | 4–6 | 12–16 |
 | Diagnostics, logs, files | Yes — `controllers/agents/{getAgentDiagnostics,getAgentLogs,listAgentFiles,readAgentFile,updateAgentFile}.ts` | Naive — fresh SSH connection per call, runs shell commands; works, doesn't scale | **REPLACE** with NanoClaw-side endpoints | 3–4 | 12–20 |
 | Version mgmt + upgrade | Yes — `installAgentVersion.ts` (`systemctl stop` → `npm i -g` → restart over SSH) | No canary, no health gate, no rollback, no fleet view | **REPLACE** | 6–8 (per-host adapt) | 30–50 (proper canary/rollback orchestrator per our brief) |
 | SSH key mgmt | Yes — `controllers/ssh-keys/*` + Hetzner SSH key endpoints + `sshKeys` table | Solid | **ADAPT** | 2–3 | 6–8 |
 | Persistent storage volume | Yes — Hetzner volume primitives + `volumes` table; created at provision time only | Solid | **ADAPT** | 2–3 | 6–10 |
-| Multi-auth (email OTP / Google / GitHub) | Yes via Firebase | OTP flow is solid (hashed, rate-limited, attempt counter); Google/GitHub ride Firebase | **REPLACE** — Firebase Admin doesn't fit Vercel+Neon idiomatically | 6–8 (drag Firebase along) | 12–20 (Auth.js / Clerk / Supabase Auth) |
+| Multi-auth (email OTP / Google / GitHub) | Yes via Firebase | OTP flow is solid (hashed, rate-limited, attempt counter); Google/GitHub ride Firebase | **REMOVE** — using Clerk for the operator dashboard | n/a | n/a (Clerk is drop-in) |
 | Polar.sh billing | Yes, deeply | Solid integration; provisioning pipeline assumes purchase-first | **REMOVE** | n/a | Removal: 6–10 |
 | Cloud-init templating | Yes — `controllers/agents/helpers/generateCloudInit.ts` (string-templated YAML) | Brittle; one bad interpolation bricks provisioning | **REPLACE** with our hardened template (§5) | 8–12 to splice NanoClaw in | 30–50 to build a proper §5-compliant template |
 | Inventory model (`agents` + `pendingAgents` schema split) | Yes | Solid; indexed; soft-delete via `deletionScheduledAt`; clean intent-vs-real separation | **KEEP/ADAPT** the schema shape | 2–4 | n/a |
@@ -70,17 +76,20 @@ approved scope cap; quality assessed from code.
 
 ### Notes that don't fit the table
 
-- **The SSH terminal is the highest-value pattern that ports cleanly.** It's
-  ~600 LOC of Bun WebSocket + ssh2 + host-key TOFU. The reason it can't ride
-  on Vercel is purely runtime — Vercel functions cap at 10–60 s and don't do
-  long-lived bidirectional sockets. Hosting the WebSocket on our control-plane
-  VPS is the natural place for it (the small persistent VPS already exists,
-  has Tailscale, and is the only thing that can SSH to user VPSes without
-  trombing through the operator's laptop).
-- **Multi-auth REPLACE is consequential** — Phase 1 needs an auth choice for
-  the operator dashboard. Auth.js (formerly NextAuth) with Neon as the adapter
-  is the boring pick and cleanly handles email OTP + Google + GitHub. Will
-  flag in `architecture.md`. Not blocking for this artifact.
+- **The WebSocket pattern is the highest-value thing that ports cleanly — but
+  not the SSH terminal specifically.** The browser SSH terminal is Phase 3+
+  polish; the operator is on Tailscale and can SSH from their laptop. The
+  WebSocket pattern itself (xterm.js or otherwise on the frontend, long-lived
+  socket on the backend) is what we want for live log tailing and live
+  fleet-update progress in the dashboard, both of which are Phase 2. The
+  reason it can't ride on Vercel is purely runtime — Vercel functions cap at
+  10–60 s and don't do long-lived bidirectional sockets. The WebSocket lives
+  on our control-plane VPS, which the operator's browser reaches over
+  Tailscale. Implication: live dashboard features require the operator on
+  Tailscale; read-only views work without it.
+- **Multi-auth is settled** — operator dashboard uses **Clerk** on the Vercel
+  free tier. Drop-in components for email / Google / GitHub / MFA, zero ops
+  at our scale. No Firebase, no Auth.js. Will land in `architecture.md`.
 - **The `pendingAgents` "intent record" pattern translates without Polar.**
   We have an analogous moment: operator clicks "add user" → Slack install
   link is generated → on first install completion the VPS provisions. The
@@ -102,9 +111,13 @@ ClawHost's cloud-init is at `apps/api/src/controllers/agents/helpers/generateClo
 
 The cloud-init is a string-templated YAML pipeline (`generateCloudInit.ts:186-294`) — fine for a 100-line bootstrap but not for the multi-section hardened template we need. We'd be rewriting it almost entirely to match §5, and once that's done there's nothing left of the original. This is the single biggest reason fork-and-adapt loses to greenfield.
 
-## Patterns worth stealing
+## Patterns worth noting
 
-Concrete things to study before writing the equivalent in our stack. File references are to the cloned ClawHost repo.
+These are notes for awareness, not commitments. Per the operator's guidance,
+we are **not obligated to take anything from ClawHost** — the working
+assumption is greenfield, and these patterns are listed only so we recognise
+them if they come up during Phase 1 design. File references are to the
+cloned ClawHost repo.
 
 - **`agents` / `pendingAgents` schema split** — clean way to model "intent
   initiated but real resource not yet created." Translates to "Slack install
@@ -180,7 +193,7 @@ The three §6.3 paths, scored against this survey:
 | Path | Verdict | Reasoning |
 |---|---|---|
 | **Fork-and-adapt** | Reject | KEEP+ADAPT covers ~50% of needed features by hour count, *and* the load-bearing pieces (cloud-init, auth, runtime model) are all REPLACE. The §6.2 "fork if KEEP+ADAPT ≥ 60%" threshold isn't met, and the qualitative architecture mismatch (Bun-long-lived vs Vercel-serverless) is a hard blocker that no amount of porting fixes cleanly. |
-| **Cherry-pick patterns, build fresh** | **Choose this** | Steal the schema, the encryption helper, the TOFU store, the OTP rate-limit pattern, the WebSocket terminal protocol shape (host on small VPS), the Drizzle discipline. Build everything else against Vercel+Neon+small-VPS+GitHub Actions per the brief. Estimated 2–3 weeks of greenfield. |
+| **Cherry-pick patterns, build fresh** | **Choose this** | Build greenfield on Vercel + Neon + Clerk + control-plane VPS + GitHub Actions per the brief. The patterns observed in ClawHost are notes for design awareness, not imports — we may use any, all, or none of them. Estimated 2–3 weeks of greenfield. |
 | **Use-as-is** | Reject (already ruled out by the brief, confirmed here) | Wrong agent (OpenClaw vs NanoClaw), wrong stack (Hono.js vs Vercel+Neon), zero hardening, Polar in the critical path. |
 
 **Going with cherry-pick, build fresh.**
@@ -189,13 +202,13 @@ The three §6.3 paths, scored against this survey:
 
 Things that flow from this artifact into the eventual `architecture.md` (artifact 6) — not decisions yet, just things that will land in that doc:
 
-- **Auth choice for the operator dashboard.** Auth.js + Neon adapter is the
-  boring pick; covers Google + GitHub + magic-link OTP. Confirm in artifact 6.
-- **The browser SSH terminal lives on the control-plane VPS, not Vercel.**
-  Tailscale-bound on the VPS side; Vercel renders the xterm.js frontend and
-  connects to the control-plane VPS WebSocket via an authenticated endpoint
-  on the operator's tailnet. Implies the operator's laptop is on Tailscale —
-  which it is per the brief.
+- **Auth for the operator dashboard: Clerk.** Drop-in components on the
+  Vercel free tier; zero ops at our scale.
+- **Live WebSocket dashboard features (logs, rollout progress) live on the
+  control-plane VPS, not Vercel.** The operator's browser reaches the VPS
+  over Tailscale. Read-only views (lists, history) work without Tailscale;
+  live features require it. The browser SSH terminal specifically is a
+  Phase 3+ polish item, not Phase 1.
 - **The schema stub** — borrow `agents` and `pendingAgents` shape verbatim,
   rename to `vps_hosts` and `pending_provisions`. Add `slack_installs`,
   `integrations`, `audit_log`, `health_pings` per the brief's §4.1.
