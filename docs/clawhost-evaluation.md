@@ -66,7 +66,7 @@ approved scope cap; quality assessed from code.
 | Version mgmt + upgrade | Yes — `installAgentVersion.ts` (`systemctl stop` → `npm i -g` → restart over SSH) | No canary, no health gate, no rollback, no fleet view | **REPLACE** | 6–8 (per-host adapt) | 30–50 (proper canary/rollback orchestrator per our brief) |
 | SSH key mgmt | Yes — `controllers/ssh-keys/*` + Hetzner SSH key endpoints + `sshKeys` table | Solid | **ADAPT** | 2–3 | 6–8 |
 | Persistent storage volume | Yes — Hetzner volume primitives + `volumes` table; created at provision time only | Solid | **ADAPT** | 2–3 | 6–10 |
-| Multi-auth (email OTP / Google / GitHub) | Yes via Firebase | OTP flow is solid (hashed, rate-limited, attempt counter); Google/GitHub ride Firebase | **REMOVE** — using Clerk for the operator dashboard | n/a | n/a (Clerk is drop-in) |
+| Multi-auth (email OTP / Google / GitHub) | Yes via Firebase | OTP flow is solid (hashed, rate-limited, attempt counter); Google/GitHub ride Firebase | **REMOVE** — operator dashboard is Clerk + Google SSO only | n/a | n/a (Clerk is drop-in) |
 | Polar.sh billing | Yes, deeply | Solid integration; provisioning pipeline assumes purchase-first | **REMOVE** | n/a | Removal: 6–10 |
 | Cloud-init templating | Yes — `controllers/agents/helpers/generateCloudInit.ts` (string-templated YAML) | Brittle; one bad interpolation bricks provisioning | **REPLACE** with our hardened template (§5) | 8–12 to splice NanoClaw in | 30–50 to build a proper §5-compliant template |
 | Inventory model (`agents` + `pendingAgents` schema split) | Yes | Solid; indexed; soft-delete via `deletionScheduledAt`; clean intent-vs-real separation | **KEEP/ADAPT** the schema shape | 2–4 | n/a |
@@ -87,9 +87,11 @@ approved scope cap; quality assessed from code.
   on our control-plane VPS, which the operator's browser reaches over
   Tailscale. Implication: live dashboard features require the operator on
   Tailscale; read-only views work without it.
-- **Multi-auth is settled** — operator dashboard uses **Clerk** on the Vercel
-  free tier. Drop-in components for email / Google / GitHub / MFA, zero ops
-  at our scale. No Firebase, no Auth.js. Will land in `architecture.md`.
+- **Multi-auth is settled** — operator dashboard uses **Clerk + Google SSO
+  only** on the Vercel free tier. No email OTP, no GitHub, no MFA setup
+  burden — the operator already has a Google account, and Google's own MFA
+  satisfies our 2FA requirement. Zero ops at our scale. No Firebase, no
+  Auth.js. Will land in `architecture.md`.
 - **The `pendingAgents` "intent record" pattern translates without Polar.**
   We have an analogous moment: operator clicks "add user" → Slack install
   link is generated → on first install completion the VPS provisions. The
@@ -132,9 +134,9 @@ cloned ClawHost repo.
   `apps/api/src/lib/encryption/encrypt.ts`. Useful for the bot-token /
   refresh-token columns in our `slack_installs` table.
 - **OTP flow with hashed codes + rate-limited attempts** —
-  `apps/api/src/controllers/auth/sendOtp.ts`, `verifyOtp.ts`. We may not
-  need email OTP at all if the operator dashboard uses Google/GitHub only,
-  but the rate-limit-per-IP-and-identifier pattern is reusable.
+  `apps/api/src/controllers/auth/sendOtp.ts`, `verifyOtp.ts`. We don't need
+  email OTP — the operator dashboard is Google SSO only — but the
+  rate-limit-per-IP-and-identifier pattern is reusable elsewhere if needed.
 - **xterm.js + Bun WebSocket + ssh2 protocol shape** for the browser SSH
   terminal, ported to our control-plane VPS rather than Vercel.
   `apps/api/src/services/terminalSocket.ts` + `apps/web/src/components/dashboard/AgentTerminalContent.tsx`.
@@ -202,8 +204,8 @@ The three §6.3 paths, scored against this survey:
 
 Things that flow from this artifact into the eventual `architecture.md` (artifact 6) — not decisions yet, just things that will land in that doc:
 
-- **Auth for the operator dashboard: Clerk.** Drop-in components on the
-  Vercel free tier; zero ops at our scale.
+- **Auth for the operator dashboard: Clerk + Google SSO only.** No email/OTP,
+  no GitHub. Drop-in on the Vercel free tier; zero ops at our scale.
 - **Live WebSocket dashboard features (logs, rollout progress) live on the
   control-plane VPS, not Vercel.** The operator's browser reaches the VPS
   over Tailscale. Read-only views (lists, history) work without Tailscale;
